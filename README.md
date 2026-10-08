@@ -41,9 +41,32 @@ failed transaction, and the backup key never has to sign to set it up.
 
 ## The problem
 
-An Ethereum address is a hash of a public key. Until a key signs something, nobody knows its public
-key, only the hash. The first signature reveals the public key, and from then on the key is
-protected only by the hardness of ECDSA.
+### What an address actually is
+
+An Ethereum account has three pieces:
+
+| Piece | Size | Public? |
+|---|---|---|
+| Private key | 32 bytes, a random number | Never |
+| Public key | 64 bytes, a point `(x, y)` on the secp256k1 curve, computed from the private key | Only after the key signs something |
+| Address | 20 bytes | Always |
+
+The address is the **last 20 bytes of the Keccak-256 hash of the public key**:
+
+```text
+address = keccak256(publicKey)[12:32]
+```
+
+So the 20 bytes of an address are a hash fingerprint of the public key, not the key itself. A hash
+only works one way: you can't recover the public key from the address. Breaking ECDSA doesn't change
+that, because inverting Keccak is a separate problem with no known shortcut.
+
+Signing changes this. Anyone can recover the full public key from a signature and the signed
+message (that is exactly what `ecrecover` does), and check that it hashes to the address. **The
+first signature reveals the public key**, and from then on the key is protected only by the
+hardness of ECDSA: getting the private key from the public key.
+
+### Why that matters
 
 If ECDSA breaks (quantum computers, better math, or AI-driven cryptanalysis), any key that has ever
 signed could be cracked from its public key. Keys that have **never** signed stay safe, because
