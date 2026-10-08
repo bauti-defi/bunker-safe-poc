@@ -3,6 +3,10 @@
 A [Safe](https://safe.global) smart account where **every signing key is used exactly once**.
 Proof of concept for "bunker mode": staying safe even if ECDSA keys become crackable.
 
+The Safe has exactly **one signer: a break-glass key that never signs** during normal operation.
+Day-to-day operations go through a module, signed by one-time hot keys that are replaced with a
+**fresh address** every time they sign.
+
 > [!WARNING]
 > **This is a proof of concept. It has not been audited** and is not deployed anywhere. Do not use
 > it to hold real funds. It exists for research and discussion only.
@@ -28,7 +32,7 @@ of being a Safe owner:
 
 | Spec | This repo |
 |---|---|
-| Signer A, a persistent backup owner | The break-glass owner. It never signs during normal operation |
+| Signer A, a persistent backup owner | The Safe's **sole signer**, a break-glass key. It never signs during normal operation |
 | Rotating signer B → C → D | The module's hot key. Each signed operation names the next one |
 | Add the new signer and remove the old one inside each transaction | The module burns the old key and installs the new one before the transaction runs, even if the transaction fails |
 
@@ -45,12 +49,28 @@ If ECDSA breaks (quantum computers, better math, or AI-driven cryptanalysis), an
 signed could be cracked from its public key. Keys that have **never** signed stay safe, because
 their public key was never revealed.
 
+### What "fresh address" means
+
+Following [Justin Drake's definition](https://x.com/drakefjustin/status/2107837081313505768), a
+**fresh address** is one **whose public key is still hidden behind its hash**, because its private
+key has **never signed anything**.
+
+- **Receiving funds does not expose a key.** Anyone can send to an address without learning its
+  public key.
+- **Any signature exposes it, forever.** That includes on-chain transactions and off-chain
+  signatures: Permit approvals, Sign-In with Ethereum, Safe off-chain messages, and any other
+  signed message. After one signature, the address is no longer fresh.
+- **Sharing an extended public key (xpub) exposes every key derived from it** on non-hardened paths.
+
+Bunker mode keeps every key with power over the funds fresh until the moment it is used, and makes
+sure it has no power left after that.
+
 ## The idea
 
 Never let a key with power over the funds stay valid after it reveals its public key.
 
-- The Safe's only owner is a **break-glass key** that never signs during normal operation. Its
-  public key stays hidden.
+- The Safe's **sole signer** (owner, threshold 1) is a **break-glass key** that never signs during
+  normal operation. Its address stays fresh.
 - Day-to-day operations are signed by a **hot key** held in a module. Each signed operation names
   the **next** hot key, and the module retires the current key in the same transaction that uses it.
 - When an attacker could crack a revealed key, that key is already worthless.
@@ -88,7 +108,7 @@ Op(address to, uint256 value, bytes data, uint8 operation,
 - `to`, `value`, `data`, `operation`: a normal Safe transaction (0 = call, 1 = delegatecall).
   To do several things at once, delegatecall Safe's `MultiSendCallOnly`, the same format the Safe
   Transaction Builder produces.
-- `nextHotKey`: the fresh key that takes over after this operation.
+- `nextHotKey`: the [fresh address](#what-fresh-address-means) that takes over after this operation.
 - `deadline`: after this time the transaction is skipped, but the key still rotates.
 - `minPayloadGas`: the gas the relayer must provide, so nobody can burn your key while starving the
   transaction of gas.
@@ -138,17 +158,17 @@ can never be replayed.
 If hot keys are lost or compromised, the break-glass owner signs one normal Safe transaction that:
 
 1. sets a new hot key (or freezes the module), **and**
-2. replaces the break-glass owner with a fresh address.
+2. replaces the break-glass signer with a new [fresh address](#what-fresh-address-means).
 
 Signing reveals the break-glass key's public key, so the same transaction must retire it. See
 `test_breakGlass_resetsHotKeyAndRotatesOwnerAtomically`.
 
 ## What you must get right
 
-- **Hot keys must be truly fresh.** The contract can't tell whether a key has signed before. Never
-  use a hot key for anything else (other transactions, logins, permits, Safe off-chain messages),
-  and never share its extended public key. Derive hot keys on hardened paths from a seed separate
-  from the break-glass key.
+- **Hot keys must be truly [fresh](#what-fresh-address-means).** The contract can't tell whether a
+  key has signed before. Never use a hot key for anything else (other transactions, logins, permits,
+  Safe off-chain messages), and never share its extended public key. Derive hot keys on hardened
+  paths from a seed separate from the break-glass key.
 - **Don't reuse the break-glass key as a hot key.** The module doesn't check for this.
 - **Simulate break-glass transactions first.** If one fails on-chain, it reveals the owner's public
   key without rotating it.
