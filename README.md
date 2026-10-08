@@ -3,24 +3,97 @@
 A [Safe](https://safe.global) smart account where **every signing key is used exactly once**.
 Proof of concept for "bunker mode": staying safe even if ECDSA keys become crackable.
 
-> Not audited. Not deployed. For research and discussion only.
+The Safe has exactly **one signer: a break-glass key that never signs** during normal operation.
+Day-to-day operations go through a module, signed by one-time hot keys that are replaced with a
+**fresh address** every time they sign.
+
+> [!WARNING]
+> **This is a proof of concept. It has not been audited** and is not deployed anywhere. Do not use
+> it to hold real funds. It exists for research and discussion only.
+
+## Background
+
+- **Where "bunker mode" started:** [Justin Drake's call](https://x.com/drakefjustin/status/2107837081313505768)
+  for the industry to plan for ECDSA breaking early. Move funds to addresses whose public keys are
+  still hidden behind a hash, and have load-bearing signers rotate their ECDSA key with every
+  signed message.
+- **What inspired this design:** [@BlockEnthusiast's idea](https://x.com/BlockEnthusiast/status/2107897004265496742).
+  Instead of moving all your funds to a new address every time you sign, keep the funds in a Safe
+  and rotate the **signer**: every transaction does its work, adds the next signer, and removes the
+  one that just signed.
+
+![Design spec: each transaction does its work and swaps the signer that signed it for a fresh one](assets/design-spec.png)
+
+*Design spec from the tweet. Signer A stays as a persistent backup, and the signing slot rotates
+B → C → D. In Transaction 1, "Add Signer A" should read "Add Signer C" (a typo the author confirmed).*
+
+This repo implements that idea with one change. The rotating key lives in a Safe **module** instead
+of being a Safe owner:
+
+| Spec | This repo |
+|---|---|
+| Signer A, a persistent backup owner | The Safe's **sole signer**, a break-glass key. It never signs during normal operation |
+| Rotating signer B → C → D | The module's hot key. Each signed operation names the next one |
+| Add the new signer and remove the old one inside each transaction | The module burns the old key and installs the new one before the transaction runs, even if the transaction fails |
+
+Rotating inside the module means rotation can't be forgotten, left out of a batch, or undone by a
+failed transaction, and the backup key never has to sign to set it up.
 
 ## The problem
 
-An Ethereum address is a hash of a public key. Until a key signs something, nobody knows its public
-key, only the hash. The first signature reveals the public key, and from then on the key is
-protected only by the hardness of ECDSA.
+### What an address actually is
+
+An Ethereum account has three pieces:
+
+| Piece | Size | Public? |
+|---|---|---|
+| Private key | 32 bytes, a random number | Never |
+| Public key | 64 bytes, a point `(x, y)` on the secp256k1 curve, computed from the private key | Only after the key signs something |
+| Address | 20 bytes | Always |
+
+The address is the **last 20 bytes of the Keccak-256 hash of the public key**:
+
+```text
+address = keccak256(publicKey)[12:32]
+```
+
+So the 20 bytes of an address are a hash fingerprint of the public key, not the key itself. A hash
+only works one way: you can't recover the public key from the address. Breaking ECDSA doesn't change
+that, because inverting Keccak is a separate problem with no known shortcut.
+
+Signing changes this. Anyone can recover the full public key from a signature and the signed
+message (that is exactly what `ecrecover` does), and check that it hashes to the address. **The
+first signature reveals the public key**, and from then on the key is protected only by the
+hardness of ECDSA: getting the private key from the public key.
+
+### Why that matters
 
 If ECDSA breaks (quantum computers, better math, or AI-driven cryptanalysis), any key that has ever
 signed could be cracked from its public key. Keys that have **never** signed stay safe, because
 their public key was never revealed.
 
+### What "fresh address" means
+
+Following [Justin Drake's definition](https://x.com/drakefjustin/status/2107837081313505768), a
+**fresh address** is one **whose public key is still hidden behind its hash**, because its private
+key has **never signed anything**.
+
+- **Receiving funds does not expose a key.** Anyone can send to an address without learning its
+  public key.
+- **Any signature exposes it, forever.** That includes on-chain transactions and off-chain
+  signatures: Permit approvals, Sign-In with Ethereum, Safe off-chain messages, and any other
+  signed message. After one signature, the address is no longer fresh.
+- **Sharing an extended public key (xpub) exposes every key derived from it** on non-hardened paths.
+
+Bunker mode keeps every key with power over the funds fresh until the moment it is used, and makes
+sure it has no power left after that.
+
 ## The idea
 
 Never let a key with power over the funds stay valid after it reveals its public key.
 
-- The Safe's only owner is a **break-glass key** that never signs during normal operation. Its
-  public key stays hidden.
+- The Safe's **sole signer** (owner, threshold 1) is a **break-glass key** that never signs during
+  normal operation. Its address stays fresh.
 - Day-to-day operations are signed by a **hot key** held in a module. Each signed operation names
   the **next** hot key, and the module retires the current key in the same transaction that uses it.
 - When an attacker could crack a revealed key, that key is already worthless.
@@ -58,7 +131,7 @@ Op(address to, uint256 value, bytes data, uint8 operation,
 - `to`, `value`, `data`, `operation`: a normal Safe transaction (0 = call, 1 = delegatecall).
   To do several things at once, delegatecall Safe's `MultiSendCallOnly`, the same format the Safe
   Transaction Builder produces.
-- `nextHotKey`: the fresh key that takes over after this operation.
+- `nextHotKey`: the [fresh address](#what-fresh-address-means) that takes over after this operation.
 - `deadline`: after this time the transaction is skipped, but the key still rotates.
 - `minPayloadGas`: the gas the relayer must provide, so nobody can burn your key while starving the
   transaction of gas.
@@ -108,17 +181,17 @@ can never be replayed.
 If hot keys are lost or compromised, the break-glass owner signs one normal Safe transaction that:
 
 1. sets a new hot key (or freezes the module), **and**
-2. replaces the break-glass owner with a fresh address.
+2. replaces the break-glass signer with a new [fresh address](#what-fresh-address-means).
 
 Signing reveals the break-glass key's public key, so the same transaction must retire it. See
 `test_breakGlass_resetsHotKeyAndRotatesOwnerAtomically`.
 
 ## What you must get right
 
-- **Hot keys must be truly fresh.** The contract can't tell whether a key has signed before. Never
-  use a hot key for anything else (other transactions, logins, permits, Safe off-chain messages),
-  and never share its extended public key. Derive hot keys on hardened paths from a seed separate
-  from the break-glass key.
+- **Hot keys must be truly [fresh](#what-fresh-address-means).** The contract can't tell whether a
+  key has signed before. Never use a hot key for anything else (other transactions, logins, permits,
+  Safe off-chain messages), and never share its extended public key. Derive hot keys on hardened
+  paths from a seed separate from the break-glass key.
 - **Don't reuse the break-glass key as a hot key.** The module doesn't check for this.
 - **Simulate break-glass transactions first.** If one fails on-chain, it reveals the owner's public
   key without rotating it.
@@ -153,3 +226,8 @@ BREAK_GLASS=<owner address> HOT_KEY=<first hot key address> \
 
 Dependencies (pinned): `safe-smart-account` v1.5.0, `openzeppelin-contracts` v5.4.0,
 `forge-std` v1.17.0.
+
+## License
+
+[MIT](LICENSE). This is an unaudited proof of concept, provided "as is" without warranty of any
+kind. Use at your own risk.
