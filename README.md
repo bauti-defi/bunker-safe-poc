@@ -3,7 +3,9 @@
 A [Safe](https://safe.global) smart account where **every signing key is used exactly once**.
 Proof of concept for "bunker mode": staying safe even if ECDSA keys become crackable.
 
-> Not audited. Not deployed. For research and discussion only.
+> [!WARNING]
+> **This is a proof of concept. It has not been audited** and is not deployed anywhere. Do not use
+> it to hold real funds. It exists for research and discussion only.
 
 ## Background
 
@@ -181,3 +183,8 @@ BREAK_GLASS=<owner address> HOT_KEY=<first hot key address> \
 
 Dependencies (pinned): `safe-smart-account` v1.5.0, `openzeppelin-contracts` v5.4.0,
 `forge-std` v1.17.0.
+
+## License
+
+[MIT](LICENSE). This is an unaudited proof of concept, provided "as is" without warranty of any
+kind. Use at your own risk.
