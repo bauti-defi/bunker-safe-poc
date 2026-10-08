@@ -5,6 +5,34 @@ Proof of concept for "bunker mode": staying safe even if ECDSA keys become crack
 
 > Not audited. Not deployed. For research and discussion only.
 
+## Background
+
+- **Where "bunker mode" started:** [Justin Drake's call](https://x.com/drakefjustin/status/2107837081313505768)
+  for the industry to plan for ECDSA breaking early. Move funds to addresses whose public keys are
+  still hidden behind a hash, and have load-bearing signers rotate their ECDSA key with every
+  signed message.
+- **What inspired this design:** [@BlockEnthusiast's idea](https://x.com/BlockEnthusiast/status/2107897004265496742).
+  Instead of moving all your funds to a new address every time you sign, keep the funds in a Safe
+  and rotate the **signer**: every transaction does its work, adds the next signer, and removes the
+  one that just signed.
+
+![Design spec: each transaction does its work and swaps the signer that signed it for a fresh one](assets/design-spec.png)
+
+*Design spec from the tweet. Signer A stays as a persistent backup, and the signing slot rotates
+B → C → D. In Transaction 1, "Add Signer A" should read "Add Signer C" (a typo the author confirmed).*
+
+This repo implements that idea with one change. The rotating key lives in a Safe **module** instead
+of being a Safe owner:
+
+| Spec | This repo |
+|---|---|
+| Signer A, a persistent backup owner | The break-glass owner. It never signs during normal operation |
+| Rotating signer B → C → D | The module's hot key. Each signed operation names the next one |
+| Add the new signer and remove the old one inside each transaction | The module burns the old key and installs the new one before the transaction runs, even if the transaction fails |
+
+Rotating inside the module means rotation can't be forgotten, left out of a batch, or undone by a
+failed transaction, and the backup key never has to sign to set it up.
+
 ## The problem
 
 An Ethereum address is a hash of a public key. Until a key signs something, nobody knows its public
